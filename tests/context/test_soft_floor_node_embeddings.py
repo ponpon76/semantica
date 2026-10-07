@@ -157,8 +157,9 @@ class TestNodeEmbeddingsPersistence:
     ``NodeEmbedder.store_embeddings()`` path (property-backed stores)."""
 
     def test_embeddings_round_trip(self, tmp_path):
-        """Embeddings stored the way NodeEmbedder.store_embeddings() does
-        (in-memory fallback dict) are written and restored."""
+        """The in-memory _node_embeddings dict (the fallback path of
+        store_embeddings() for stores without property setters) is written
+        and restored."""
         source = ContextGraph()
         source.record_decision(
             category="architecture",
@@ -213,6 +214,15 @@ class TestNodeEmbeddingsPersistence:
 
         stale.load_from_file(path)
         assert stale._node_embeddings == {"real": [0.5, 0.5]}
+
+    def test_from_dict_resets_stale_embeddings(self):
+        """clear()/from_dict() reset the in-memory embeddings with the
+        graph: no ghost vectors for ids that no longer exist."""
+        stale = ContextGraph()
+        stale._node_embeddings = {"ghost": [1.0, 1.0, 1.0]}
+
+        stale.from_dict({"nodes": [], "edges": []})
+        assert stale._node_embeddings == {}
 
     def test_store_embeddings_public_path_reads_back(self):
         """store_embeddings() through the public path must be readable back:

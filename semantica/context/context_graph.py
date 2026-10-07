@@ -1903,6 +1903,8 @@ class ContextGraph:
             self._analytics_cache.clear()
             self._retractions.clear()
             self._tombstones.clear()
+            # In-memory node embeddings belong to the graph being replaced.
+            self._node_embeddings.clear()
             # Rebuild derived decision indexes from the freshly-loaded nodes.
             self._rebuild_decision_indexes()
 
@@ -3107,6 +3109,10 @@ class ContextGraph:
             self._decision_index = defaultdict(set)
             self._entity_index = defaultdict(set)
             self._temporal_index = []
+            # In-memory node embeddings belong to the graph being replaced;
+            # keeping them would leave ghost vectors for ids that no longer
+            # exist.
+            self._node_embeddings.clear()
         self.logger.debug("Graph state fully cleared.")
 
     # --- Internal Helpers ---
@@ -4586,6 +4592,9 @@ class ContextGraph:
                 whose reasoning is long relative to the query (#1140).
                 Passing ``soft_floor=0.0`` ranks every candidate; a small
                 positive value (e.g. ``0.05``) only removes total noise.
+                Values outside ``[0, 1]`` are accepted and behave as the
+                extreme case (negative ranks everything, above 1 keeps
+                nothing).
                 When provided, this overrides ``similarity_threshold``.
             include_neighbors: For each returned precedent, attach adjacent
                 decisions under a ``"neighbors"`` key — explicit causal
@@ -5820,10 +5829,12 @@ class ContextGraph:
                             continue
                         entity_counts.setdefault(other, []).append(entity)
                 for other, shared in sorted(
-                    entity_counts.items(), key=lambda kv: -len(kv[1])
+                    entity_counts.items(), key=lambda kv: (-len(kv[1]), kv[0])
                 ):
                     if len(neighbors) >= include_neighbors:
                         break
+                    if other not in self._decisions:
+                        continue
                     used_ids.add(other)
                     neighbors.append({
                         "decision": self._decisions[other],
