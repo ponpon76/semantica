@@ -1,19 +1,18 @@
 """
 Tests for ranking semantics (soft_floor) and node-embedding persistence.
 
-Covers the two behaviors discussed in #1140:
+1. Rank-first retrieval: ``soft_floor`` switches decision search from a
+   hard threshold to top-k ranking with a low floor. Since #1716 main
+   scores a decision's own scenario first, the surviving cases are the
+   default-threshold divergence between the two entry points (0.5 vs 0.3)
+   and the reasoning-only match discounted below the 0.3 default — both
+   overrideable with ``soft_floor`` (#1713 review).
 
-1. Rank-first retrieval: the lexical content score of an exact-scenario
-   match decays monotonically as ``reasoning`` grows (scenario, reasoning
-   and entities share one bag of words, bounding the score by
-   ``|S| / |S union R|``), so a fixed hard threshold loses well-documented
-   decisions. ``soft_floor`` switches the search to top-k ranking with a
-   low floor instead.
-
-2. Node embeddings (e.g. node2vec) computed by
-   ``NodeEmbedder.store_embeddings()`` live in the in-memory
-   ``_node_embeddings`` dict for stores without property setters — they
-   must survive ``save_to_file()`` / ``load_from_file()``.
+2. Node embeddings (e.g. node2vec) stored through
+   ``NodeEmbedder.store_embeddings()`` must stay readable through the
+   public path — an empty in-memory ``_node_embeddings`` dict must not
+   shadow property-backed vectors — and survive
+   ``save_to_file()`` / ``load_from_file()``.
 """
 
 import pytest
@@ -51,11 +50,66 @@ class TestRankFirstSoftFloor:
         _record_one(g)
         return g
 
-    def test_diluted_decision_misses_hard_default(self, graph):
-        """Without soft_floor, the long-reasoning decision stays unreachable
-        through both documented entry points (the #1140 symptom)."""
-        assert graph.find_precedents_by_scenario(SCENARIO) == []
-        assert graph.find_similar_decisions(SCENARIO) == []
+    def test_exact_scenario_found_by_default_both_entry_points(self, graph):
+        """Since #1716 main scores a decision's own scenario first: the
+        exact-scenario match comes back through both entry points at their
+        defaults — the old #1140 headline symptom no longer reproduces on
+        main (the case this suite originally pinned)."""
+        hits = graph.find_precedents_by_scenario(SCENARIO)
+        assert len(hits) == 1
+        assert hits[0]["decision"]["scenario"] == SCENARIO
+
+        hits = graph.find_similar_decisions(SCENARIO)
+        assert len(hits) == 1
+        assert hits[0]["decision"]["scenario"] == SCENARIO
+
+    def test_threshold_divergence_between_entry_points(self):
+        """The two entry points disagree on their default hard threshold
+        (find_precedents_by_scenario 0.5, find_similar_decisions 0.3 — both
+        named by #1716 without being changed): the same match passes one and
+        not the other, and soft_floor levels both to ranking semantics
+        (#1713 review). Measured combined score for this fixture: 0.350."""
+        g = ContextGraph()
+        g.record_decision(
+            category="architecture",
+            scenario=SCENARIO
+            + " across multiple regions and environments with strict "
+            "compliance requirements",
+            reasoning="Short rationale",
+            outcome="postgres",
+            confidence=0.9,
+        )
+
+        assert g.find_precedents_by_scenario(SCENARIO) == []
+        assert len(g.find_similar_decisions(SCENARIO)) == 1
+
+        hits = g.find_precedents_by_scenario(SCENARIO, soft_floor=0.0)
+        assert len(hits) == 1
+        hits = g.find_similar_decisions(SCENARIO, soft_floor=0.0)
+        assert len(hits) == 1
+
+    def test_reasoning_only_match_below_default_returns_with_soft_floor(self):
+        """A query overlapping the reasoning but not the scenario falls
+        below the 0.3 default (the 0.8x full-text discount of #1716) and is
+        excluded by default — exactly the kind of threshold a caller should
+        be able to override with soft_floor (#1713 review). Measured
+        combined score for this fixture: 0.124."""
+        g = ContextGraph()
+        g.record_decision(
+            category="architecture",
+            scenario="Pick a deployment region for the customer API",
+            reasoning="Operational familiarity with postgres favors the "
+            "region the team already runs in production",
+            outcome="eu-west",
+            confidence=0.8,
+        )
+        query = "operational familiarity with postgres"
+
+        assert g.find_similar_decisions(query) == []
+
+        hits = g.find_similar_decisions(query, soft_floor=0.0)
+        assert len(hits) == 1
+        assert "postgres" in hits[0]["decision"]["reasoning"]
 
     def test_soft_floor_ranks_it_back(self, graph):
         """soft_floor=0.0 ranks every candidate; the decision comes back."""
