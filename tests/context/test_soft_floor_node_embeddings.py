@@ -320,3 +320,40 @@ class TestNeighborhoodRetrieval:
         )
         assert len(hits) == 1
         assert len(hits[0]["neighbors"]) == 1
+
+    def test_neighbors_respect_temporal_filter(self):
+        """A decision whose valid_until is past is filtered out of the
+        primary results AND out of the neighbors (same predicate — #1713
+        review), and comes back with include_superseded=True."""
+        g = ContextGraph()
+        main_id = g.record_decision(
+            category="architecture",
+            scenario=SCENARIO,
+            reasoning="Cost",
+            outcome="postgres",
+            confidence=0.9,
+        )
+        expired_id = g.record_decision(
+            category="architecture",
+            scenario="Retire the legacy reporting warehouse",
+            reasoning="postgres service accounts and shared tooling",
+            outcome="retire",
+            confidence=0.8,
+            valid_until="2020-01-01T00:00:00",
+        )
+        g.add_causal_relationship(main_id, expired_id, "CAUSED")
+
+        hits = g.find_precedents_by_scenario(SCENARIO, include_neighbors=3)
+        assert len(hits) == 1
+        assert all(
+            n["decision"]["id"] != expired_id
+            for n in hits[0].get("neighbors", [])
+        )
+
+        revisited = g.find_precedents_by_scenario(
+            SCENARIO, include_neighbors=3, include_superseded=True
+        )
+        assert any(
+            n["decision"]["id"] == expired_id
+            for n in revisited[0].get("neighbors", [])
+        )

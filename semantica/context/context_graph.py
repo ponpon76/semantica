@@ -4657,7 +4657,12 @@ class ContextGraph:
         precedents = precedents[:limit]
 
         if include_neighbors > 0:
-            self._attach_decision_neighbors(precedents, include_neighbors)
+            self._attach_decision_neighbors(
+                precedents,
+                include_neighbors,
+                include_superseded=include_superseded,
+                as_of=as_of_time,
+            )
         return precedents
     
     def analyze_decision_influence(
@@ -5754,12 +5759,16 @@ class ContextGraph:
         self,
         precedents: List[Dict[str, Any]],
         include_neighbors: int,
+        include_superseded: bool = False,
+        as_of: Optional[datetime] = None,
     ) -> None:
         """
         Attach adjacent decisions to each matched precedent (#1140): explicit
         causal relationships first, then decisions sharing entities (most
         shared first). Neighbors are capped per precedent and never duplicate
-        a matched precedent or a neighbor already attached elsewhere.
+        a matched precedent or a neighbor already attached elsewhere. Neighbors
+        pass the same temporal/supersession filter as the primary results
+        (#1713 review).
         """
         used_ids: Set[str] = {p["decision"]["id"] for p in precedents}
         for precedent in precedents:
@@ -5783,6 +5792,12 @@ class ContextGraph:
                         continue
                     if other in used_ids:
                         continue
+                    if not self._decision_matches_temporal_filters(
+                        self._decisions[other],
+                        include_superseded=include_superseded,
+                        as_of=as_of,
+                    ):
+                        continue
                     used_ids.add(other)
                     neighbors.append({
                         "decision": self._decisions[other],
@@ -5795,8 +5810,15 @@ class ContextGraph:
                 entity_counts: Dict[str, List[str]] = {}
                 for entity in precedent["decision"].get("entities") or []:
                     for other in self._entity_index.get(entity, set()):
-                        if other not in used_ids:
-                            entity_counts.setdefault(other, []).append(entity)
+                        if other in used_ids:
+                            continue
+                        if not self._decision_matches_temporal_filters(
+                            self._decisions[other],
+                            include_superseded=include_superseded,
+                            as_of=as_of,
+                        ):
+                            continue
+                        entity_counts.setdefault(other, []).append(entity)
                 for other, shared in sorted(
                     entity_counts.items(), key=lambda kv: -len(kv[1])
                 ):
