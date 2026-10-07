@@ -19,6 +19,7 @@ Covers the two behaviors discussed in #1140:
 import pytest
 
 from semantica.context.context_graph import ContextGraph
+from semantica.kg.node_embeddings import NodeEmbedder
 
 
 SCENARIO = "Choose a persistence layer for the agent decision log"
@@ -97,7 +98,9 @@ class TestRankFirstSoftFloor:
 
 
 class TestNodeEmbeddingsPersistence:
-    """_node_embeddings survives save_to_file/load_from_file."""
+    """Embeddings survive save_to_file/load_from_file — both the in-memory
+    dict path (stores without property setters) and the public
+    ``NodeEmbedder.store_embeddings()`` path (property-backed stores)."""
 
     def test_embeddings_round_trip(self, tmp_path):
         """Embeddings stored the way NodeEmbedder.store_embeddings() does
@@ -156,6 +159,75 @@ class TestNodeEmbeddingsPersistence:
 
         stale.load_from_file(path)
         assert stale._node_embeddings == {"real": [0.5, 0.5]}
+
+    def test_store_embeddings_public_path_reads_back(self):
+        """store_embeddings() through the public path must be readable back:
+        the always-present empty _node_embeddings dict must not shadow the
+        vectors stored as node properties (#1713 review)."""
+        graph = ContextGraph()
+        node_a = graph.record_decision(
+            category="architecture",
+            scenario=SCENARIO,
+            reasoning="Short rationale",
+            outcome="postgres",
+            confidence=0.9,
+        )
+        node_b = graph.record_decision(
+            category="architecture",
+            scenario="A second decision for the similarity search",
+            reasoning="Short rationale",
+            outcome="sqlite",
+            confidence=0.8,
+        )
+
+        NodeEmbedder().store_embeddings(
+            graph,
+            {node_a: [1.0, 0.0, 0.0], node_b: [0.9, 0.1, 0.0]},
+        )
+
+        embedder = NodeEmbedder()
+        assert embedder._get_node_embedding(
+            graph, node_a, "node2vec_embedding"
+        ) == [1.0, 0.0, 0.0]
+        assert embedder._get_node_embedding(
+            graph, node_b, "node2vec_embedding"
+        ) == [0.9, 0.1, 0.0]
+
+    def test_public_path_survives_round_trip(self, tmp_path):
+        """store_embeddings() + save_to_file() + load_from_file(): the
+        embeddings must still be readable, including through
+        find_similar_nodes (persistence takes effect through the public
+        path — #1713 review)."""
+        source = ContextGraph()
+        node_a = source.record_decision(
+            category="architecture",
+            scenario=SCENARIO,
+            reasoning="Short rationale",
+            outcome="postgres",
+            confidence=0.9,
+        )
+        node_b = source.record_decision(
+            category="architecture",
+            scenario="A second decision for the similarity search",
+            reasoning="Short rationale",
+            outcome="sqlite",
+            confidence=0.8,
+        )
+        NodeEmbedder().store_embeddings(
+            source,
+            {node_a: [1.0, 0.0, 0.0], node_b: [0.9, 0.1, 0.0]},
+        )
+
+        path = tmp_path / "kg_public_path.json"
+        source.save_to_file(path)
+        loaded = ContextGraph()
+        loaded.load_from_file(path)
+
+        embedder = NodeEmbedder()
+        assert embedder._get_node_embedding(
+            loaded, node_a, "node2vec_embedding"
+        ) == [1.0, 0.0, 0.0]
+        assert embedder.find_similar_nodes(loaded, node_a) == [node_b]
 
 
 class TestNeighborhoodRetrieval:
